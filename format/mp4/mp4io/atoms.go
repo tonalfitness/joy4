@@ -1,7 +1,10 @@
 package mp4io
 
-import "github.com/nareix/joy4/utils/bits/pio"
-import "time"
+import (
+	"time"
+
+	"github.com/nareix/joy4/utils/bits/pio"
+)
 
 const MOOF = Tag(0x6d6f6f66)
 
@@ -211,6 +214,12 @@ const ELST = Tag(0x656c7374)
 
 func (self EditList) Tag() Tag {
 	return ELST
+}
+
+const SIDX = Tag(0x73696478)
+
+func (self SegmentIndex) Tag() Tag {
+	return SIDX
 }
 
 const MDAT = Tag(0x6d646174)
@@ -3717,5 +3726,162 @@ func (self *TrackFragDecodeTime) Unmarshal(b []byte, offset int) (n int, err err
 	return
 }
 func (self TrackFragDecodeTime) Children() (r []Atom) {
+	return
+}
+
+type SegmentIndex struct {
+	Version           uint8
+	TrackID           uint32
+	TimeScale         uint32
+	PresentationTime  uint64
+	FirstOffset       uint64
+	reserved          uint16
+	referenceCount    uint16
+	ReferenceTypeSIDX bool
+	ReferenceSize     uint32
+	Duration          uint32
+	SAPType           uint32
+	AtomPos
+}
+
+func (self SegmentIndex) Marshal(b []byte) (n int) {
+	pio.PutU32BE(b[4:], uint32(SIDX))
+	n += self.marshal(b[8:]) + 8
+	pio.PutU32BE(b[0:], uint32(n))
+	return
+}
+
+func (self SegmentIndex) marshal(b []byte) (n int) {
+	pio.PutU8(b[n:], self.Version)
+	n += 1
+	n += 3
+	pio.PutU32BE(b[n:], self.TrackID)
+	n += 4
+	pio.PutU32BE(b[n:], self.TimeScale)
+	n += 4
+	pio.PutU64BE(b[n:], self.PresentationTime)
+	n += 8
+	pio.PutU64BE(b[n:], self.FirstOffset)
+	n += 8
+	pio.PutU16BE(b[n:], self.reserved)
+	n += 2
+	pio.PutU16BE(b[n:], self.referenceCount)
+	n += 2
+	pio.PutU32BE(b[n:], self.ReferenceSize)
+	if self.ReferenceTypeSIDX {
+		b[n] = b[n] | 1
+	}
+	n += 4
+	pio.PutU32BE(b[n:], self.Duration)
+	n += 4
+	pio.PutU32BE(b[n:], self.SAPType)
+	n += 4
+	return
+}
+
+func (self SegmentIndex) Len() (n int) {
+	n += 1
+	n += 3
+	n += 4
+	n += 4
+	n += 8
+	n += 8
+	n += 2
+	n += 2
+	n += 4
+	n += 4
+	n += 4
+	return
+}
+
+func (self *SegmentIndex) Unmarshal(b []byte, offset int) (n int, err error) {
+
+	(&self.AtomPos).setPos(offset, len(b))
+	n += 8
+
+	if len(b) < n+1 {
+		err = parseErr("Version", n+offset, err)
+		return
+	}
+	self.Version = pio.U8(b[n:])
+	n += 1
+	n += 3
+
+	if len(b) < n+4 {
+		err = parseErr("TrackID", n+offset, err)
+		return
+	}
+	self.TrackID = pio.U32BE(b[n:])
+	n += 4
+
+	if len(b) < n+4 {
+		err = parseErr("TimeScale", n+offset, err)
+		return
+	}
+	self.TimeScale = pio.U32BE(b[n:])
+	n += 4
+
+	if len(b) < n+8 {
+		err = parseErr("Presentation", n+offset, err)
+		return
+	}
+	self.PresentationTime = pio.U64BE(b[n:])
+	n += 8
+
+	if len(b) < n+8 {
+		err = parseErr("FirstOffset", n+offset, err)
+		return
+	}
+	self.FirstOffset = pio.U64BE(b[n:])
+	n += 8
+
+	if len(b) < n+2 {
+		err = parseErr("reserved", n+offset, err)
+		return
+	}
+	self.reserved = pio.U16BE(b[n:])
+	n += 2
+
+	if len(b) < n+2 {
+		err = parseErr("referenceCount", n+offset, err)
+		return
+	}
+	self.referenceCount = pio.U16BE(b[n:])
+	n += 2
+
+	if len(b) < n+4 {
+		err = parseErr("ReferenceSize", n+offset, err)
+		return
+	}
+
+	// Bit 1 indicates reference type. 0 means moof, 1 means sidx. Other 31 bytes are size
+	ref := make([]byte, 4)
+	copy(ref, b[n:n+4])
+	if ref[0]&1 == 1 {
+		self.ReferenceTypeSIDX = true
+	}
+	ref[0] = ref[0] & 0
+	refSize := pio.U32BE(ref)
+	self.ReferenceSize = refSize
+	n += 4
+
+	if len(b) < n+4 {
+		err = parseErr("Duration", n+offset, err)
+		return
+	}
+	self.Duration = pio.U32BE(b[n:])
+	n += 4
+
+	if len(b) < n+4 {
+		err = parseErr("SAPType", n+offset, err)
+		return
+	}
+	self.SAPType = pio.U32BE(b[n:])
+	n += 4
+
+	return
+}
+
+func (self SegmentIndex) Children() (r []Atom) {
 	return
 }
