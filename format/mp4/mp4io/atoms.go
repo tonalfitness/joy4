@@ -216,10 +216,22 @@ func (self EditList) Tag() Tag {
 	return ELST
 }
 
+const STYP = Tag(0x73747970)
+
+func (self SegmentType) Tag() Tag {
+	return STYP
+}
+
 const SIDX = Tag(0x73696478)
 
 func (self SegmentIndex) Tag() Tag {
 	return SIDX
+}
+
+const SBGP = Tag(0x73626770)
+
+func (self SampleToGroup) Tag() Tag {
+	return SBGP
 }
 
 const MDAT = Tag(0x6d646174)
@@ -2946,10 +2958,11 @@ func (self MovieFragHeader) Children() (r []Atom) {
 }
 
 type TrackFrag struct {
-	Header     *TrackFragHeader
-	DecodeTime *TrackFragDecodeTime
-	Run        *TrackFragRun
-	Unknowns   []Atom
+	Header        *TrackFragHeader
+	DecodeTime    *TrackFragDecodeTime
+	SampleToGroup *SampleToGroup
+	Run           *TrackFragRun
+	Unknowns      []Atom
 	AtomPos
 }
 
@@ -2966,6 +2979,9 @@ func (self TrackFrag) marshal(b []byte) (n int) {
 	if self.DecodeTime != nil {
 		n += self.DecodeTime.Marshal(b[n:])
 	}
+	if self.SampleToGroup != nil {
+		n += self.SampleToGroup.Marshal(b[n:])
+	}
 	if self.Run != nil {
 		n += self.Run.Marshal(b[n:])
 	}
@@ -2981,6 +2997,9 @@ func (self TrackFrag) Len() (n int) {
 	}
 	if self.DecodeTime != nil {
 		n += self.DecodeTime.Len()
+	}
+	if self.SampleToGroup != nil {
+		n += self.SampleToGroup.Len()
 	}
 	if self.Run != nil {
 		n += self.Run.Len()
@@ -3009,6 +3028,15 @@ func (self *TrackFrag) Unmarshal(b []byte, offset int) (n int, err error) {
 					return
 				}
 				self.Header = atom
+			}
+		case SBGP:
+			{
+				atom := &SampleToGroup{}
+				if _, err = atom.Unmarshal(b[n:n+size], offset+n); err != nil {
+					err = parseErr("sbgp", n+offset, err)
+					return
+				}
+				self.SampleToGroup = atom
 			}
 		case TFDT:
 			{
@@ -3048,6 +3076,9 @@ func (self TrackFrag) Children() (r []Atom) {
 	}
 	if self.DecodeTime != nil {
 		r = append(r, self.DecodeTime)
+	}
+	if self.SampleToGroup != nil {
+		r = append(r, self.SampleToGroup)
 	}
 	if self.Run != nil {
 		r = append(r, self.Run)
@@ -3316,6 +3347,7 @@ type TrackFragRun struct {
 	Flags            uint32
 	DataOffset       uint32
 	FirstSampleFlags uint32
+	SampleCount      uint32
 	Entries          []TrackFragRunEntry
 	AtomPos
 }
@@ -3347,12 +3379,11 @@ func (self TrackFragRun) marshal(b []byte) (n int) {
 	}
 
 	for i, entry := range self.Entries {
-		var flags uint32
-		if i > 0 {
-			flags = self.Flags
-		} else {
+		flags := self.Flags
+		if i == 0 && flags&TRUN_FIRST_SAMPLE_FLAGS != 0 {
 			flags = self.FirstSampleFlags
 		}
+
 		if flags&TRUN_SAMPLE_DURATION != 0 {
 			pio.PutU32BE(b[n:], entry.Duration)
 			n += 4
@@ -3389,10 +3420,8 @@ func (self TrackFragRun) Len() (n int) {
 	}
 
 	for i := range self.Entries {
-		var flags uint32
-		if i > 0 {
-			flags = self.Flags
-		} else {
+		flags := self.Flags
+		if i == 0 && flags&TRUN_FIRST_SAMPLE_FLAGS != 0 {
 			flags = self.FirstSampleFlags
 		}
 		if flags&TRUN_SAMPLE_DURATION != 0 {
@@ -3425,10 +3454,9 @@ func (self *TrackFragRun) Unmarshal(b []byte, offset int) (n int, err error) {
 	}
 	self.Flags = pio.U24BE(b[n:])
 	n += 3
-	var _len_Entries uint32
-	_len_Entries = pio.U32BE(b[n:])
+	self.SampleCount = pio.U32BE(b[n:])
 	n += 4
-	self.Entries = make([]TrackFragRunEntry, _len_Entries)
+	self.Entries = make([]TrackFragRunEntry, self.SampleCount)
 	if self.Flags&TRUN_DATA_OFFSET != 0 {
 		{
 			if len(b) < n+4 {
@@ -3450,7 +3478,7 @@ func (self *TrackFragRun) Unmarshal(b []byte, offset int) (n int, err error) {
 		}
 	}
 
-	for i := 0; i < int(_len_Entries); i++ {
+	for i := 0; i < int(self.SampleCount); i++ {
 		var flags uint32
 		if i > 0 {
 			flags = self.Flags
@@ -3507,6 +3535,7 @@ const LenTrackFragRunEntry = 16
 type TrackFragHeader struct {
 	Version         uint8
 	Flags           uint32
+	TrackId         uint32
 	BaseDataOffset  uint64
 	StsdId          uint32
 	DefaultDuration uint32
@@ -3526,6 +3555,8 @@ func (self TrackFragHeader) marshal(b []byte) (n int) {
 	n += 1
 	pio.PutU24BE(b[n:], self.Flags)
 	n += 3
+	pio.PutU32BE(b[n:], self.TrackId)
+	n += 4
 	if self.Flags&TFHD_BASE_DATA_OFFSET != 0 {
 		{
 			pio.PutU64BE(b[n:], self.BaseDataOffset)
@@ -3562,6 +3593,7 @@ func (self TrackFragHeader) Len() (n int) {
 	n += 8
 	n += 1
 	n += 3
+	n += 4
 	if self.Flags&TFHD_BASE_DATA_OFFSET != 0 {
 		{
 			n += 8
@@ -3604,6 +3636,10 @@ func (self *TrackFragHeader) Unmarshal(b []byte, offset int) (n int, err error) 
 	}
 	self.Flags = pio.U24BE(b[n:])
 	n += 3
+
+	self.TrackId = pio.U32BE(b[n:])
+	n += 4
+
 	if self.Flags&TFHD_BASE_DATA_OFFSET != 0 {
 		{
 			if len(b) < n+8 {
@@ -3729,19 +3765,89 @@ func (self TrackFragDecodeTime) Children() (r []Atom) {
 	return
 }
 
-type SegmentIndex struct {
-	Version           uint8
-	TrackID           uint32
-	TimeScale         uint32
-	PresentationTime  uint64
-	FirstOffset       uint64
-	reserved          uint16
-	referenceCount    uint16
-	ReferenceTypeSIDX bool
-	ReferenceSize     uint32
-	Duration          uint32
-	SAPType           uint32
+type SegmentType struct {
+	MajorVersion     uint32
+	MinorVersion     uint32
+	CompatibleBrands []uint32
 	AtomPos
+}
+
+func (self SegmentType) Marshal(b []byte) (n int) {
+	pio.PutU32BE(b[4:], uint32(STYP))
+	n += self.marshal(b[8:]) + 8
+	pio.PutU32BE(b[0:], uint32(n))
+	return
+}
+
+func (self SegmentType) marshal(b []byte) (n int) {
+	pio.PutU32BE(b[n:], self.MajorVersion)
+	n += 4
+	pio.PutU32BE(b[n:], self.MinorVersion)
+	n += 4
+	for _, brand := range self.CompatibleBrands {
+		pio.PutU32BE(b[n:], brand)
+		n += 4
+	}
+	return
+}
+
+func (self SegmentType) Len() (n int) {
+	n += 8
+	n += 4
+	n += 4
+	n += len(self.CompatibleBrands) * 4
+	return
+}
+
+func (self *SegmentType) Unmarshal(b []byte, offset int) (n int, err error) {
+
+	(&self.AtomPos).setPos(offset, len(b))
+	n += 8
+
+	if len(b) < n+4 {
+		err = parseErr("MajorVersion", n+offset, err)
+		return
+	}
+	self.MajorVersion = pio.U32BE(b[n:])
+	n += 4
+
+	if len(b) < n+4 {
+		err = parseErr("MinorVersion", n+offset, err)
+		return
+	}
+	self.MinorVersion = pio.U32BE(b[n:])
+	n += 4
+
+	for n+4 < len(b) {
+		self.CompatibleBrands = append(self.CompatibleBrands, pio.U32BE(b[n:]))
+		n += 4
+	}
+
+	return
+}
+
+func (self SegmentType) Children() (r []Atom) {
+	return
+}
+
+type SegmentIndex struct {
+	Version          uint8
+	TrackId          uint32
+	TimeScale        uint32
+	PresentationTime uint64
+	FirstOffset      uint64
+	reserved         uint16
+	Entries          []*SegmentIndexEntry
+	AtomPos
+}
+
+type SegmentIndexEntry struct {
+	ReferenceTypeIsSIDX bool
+	ReferenceSize       uint32
+	Duration            uint32
+	StartsWithSAP       bool
+	SAPType             uint8
+	SAPDeltaTime        uint32
 }
 
 func (self SegmentIndex) Marshal(b []byte) (n int) {
@@ -3755,42 +3861,68 @@ func (self SegmentIndex) marshal(b []byte) (n int) {
 	pio.PutU8(b[n:], self.Version)
 	n += 1
 	n += 3
-	pio.PutU32BE(b[n:], self.TrackID)
+	pio.PutU32BE(b[n:], self.TrackId)
 	n += 4
 	pio.PutU32BE(b[n:], self.TimeScale)
 	n += 4
-	pio.PutU64BE(b[n:], self.PresentationTime)
-	n += 8
-	pio.PutU64BE(b[n:], self.FirstOffset)
-	n += 8
+	if self.Version == 0 {
+		pio.PutU32BE(b[n:], uint32(self.PresentationTime))
+		n += 4
+		pio.PutU32BE(b[n:], uint32(self.FirstOffset))
+		n += 4
+	} else {
+		pio.PutU64BE(b[n:], self.PresentationTime)
+		n += 8
+		pio.PutU64BE(b[n:], self.FirstOffset)
+		n += 8
+	}
+
 	pio.PutU16BE(b[n:], self.reserved)
 	n += 2
-	pio.PutU16BE(b[n:], self.referenceCount)
+	pio.PutU16BE(b[n:], uint16(len(self.Entries)))
 	n += 2
-	pio.PutU32BE(b[n:], self.ReferenceSize)
-	if self.ReferenceTypeSIDX {
-		b[n] = b[n] | 1
+
+	for _, entry := range self.Entries {
+		pio.PutU32BE(b[n:], entry.ReferenceSize)
+		if entry.ReferenceTypeIsSIDX {
+			b[n] |= (1 << 7)
+		}
+		n += 4
+		pio.PutU32BE(b[n:], entry.Duration)
+		n += 4
+
+		// bit 1 = StartsWithSap 2-4 = SapType 5-32 = SAPDeltaTime
+		pio.PutU32BE(b[n:], entry.SAPDeltaTime)
+		pio.PutU8(b[n:], entry.SAPType)
+		if entry.StartsWithSAP {
+			b[n] |= (1 << 7)
+		}
+		n += 4
 	}
-	n += 4
-	pio.PutU32BE(b[n:], self.Duration)
-	n += 4
-	pio.PutU32BE(b[n:], self.SAPType)
-	n += 4
+
 	return
 }
 
+const LenSegmentIndexEntry = 12
+
 func (self SegmentIndex) Len() (n int) {
-	n += 1
+	n += 8
+	n += 1 // Version
 	n += 3
-	n += 4
-	n += 4
-	n += 8
-	n += 8
-	n += 2
-	n += 2
-	n += 4
-	n += 4
-	n += 4
+	n += 4 // TrackId
+	n += 4 // TimeScale
+	if self.Version == 0 {
+		n += 4 // PresentationTime
+		n += 4 // FirstOffset
+	} else {
+		n += 8 // PresentationTime
+		n += 8 // FirstOffset
+	}
+
+	n += 2 // reserved
+	n += 2 // referenceCount
+
+	n += len(self.Entries) * LenSegmentIndexEntry
 	return
 }
 
@@ -3808,10 +3940,10 @@ func (self *SegmentIndex) Unmarshal(b []byte, offset int) (n int, err error) {
 	n += 3
 
 	if len(b) < n+4 {
-		err = parseErr("TrackID", n+offset, err)
+		err = parseErr("TrackId", n+offset, err)
 		return
 	}
-	self.TrackID = pio.U32BE(b[n:])
+	self.TrackId = pio.U32BE(b[n:])
 	n += 4
 
 	if len(b) < n+4 {
@@ -3821,19 +3953,35 @@ func (self *SegmentIndex) Unmarshal(b []byte, offset int) (n int, err error) {
 	self.TimeScale = pio.U32BE(b[n:])
 	n += 4
 
-	if len(b) < n+8 {
-		err = parseErr("Presentation", n+offset, err)
-		return
-	}
-	self.PresentationTime = pio.U64BE(b[n:])
-	n += 8
+	if self.Version == 0 {
+		if len(b) < n+4 {
+			err = parseErr("Presentation", n+offset, err)
+			return
+		}
+		self.PresentationTime = uint64(pio.U32BE(b[n:]))
+		n += 4
 
-	if len(b) < n+8 {
-		err = parseErr("FirstOffset", n+offset, err)
-		return
+		if len(b) < n+8 {
+			err = parseErr("FirstOffset", n+offset, err)
+			return
+		}
+		self.FirstOffset = uint64(pio.U32BE(b[n:]))
+		n += 4
+	} else {
+		if len(b) < n+8 {
+			err = parseErr("Presentation", n+offset, err)
+			return
+		}
+		self.PresentationTime = pio.U64BE(b[n:])
+		n += 8
+
+		if len(b) < n+8 {
+			err = parseErr("FirstOffset", n+offset, err)
+			return
+		}
+		self.FirstOffset = pio.U64BE(b[n:])
+		n += 8
 	}
-	self.FirstOffset = pio.U64BE(b[n:])
-	n += 8
 
 	if len(b) < n+2 {
 		err = parseErr("reserved", n+offset, err)
@@ -3846,42 +3994,156 @@ func (self *SegmentIndex) Unmarshal(b []byte, offset int) (n int, err error) {
 		err = parseErr("referenceCount", n+offset, err)
 		return
 	}
-	self.referenceCount = pio.U16BE(b[n:])
+	referenceCount := pio.U16BE(b[n:])
 	n += 2
 
-	if len(b) < n+4 {
-		err = parseErr("ReferenceSize", n+offset, err)
-		return
-	}
+	self.Entries = make([]*SegmentIndexEntry, referenceCount)
+	for i := 0; i < int(referenceCount); i++ {
+		if len(b) < n+4 {
+			err = parseErr("ReferenceSize", n+offset, err)
+			return
+		}
+		entry := &SegmentIndexEntry{}
+		// Bit 1 indicates reference type. 0 means moof, 1 means sidx. Other 31 bytes are size
+		fourBytes := pio.U32BE(b[n:])
+		if (fourBytes>>31)&1 == 1 {
+			entry.ReferenceTypeIsSIDX = true
+		}
+		entry.ReferenceSize = (fourBytes & 0x7fffffff)
+		n += 4
 
-	// Bit 1 indicates reference type. 0 means moof, 1 means sidx. Other 31 bytes are size
-	ref := make([]byte, 4)
-	copy(ref, b[n:n+4])
-	if ref[0]&1 == 1 {
-		self.ReferenceTypeSIDX = true
-	}
-	ref[0] = ref[0] & 0
-	refSize := pio.U32BE(ref)
-	self.ReferenceSize = refSize
-	n += 4
+		if len(b) < n+4 {
+			err = parseErr("Duration", n+offset, err)
+			return
+		}
+		entry.Duration = pio.U32BE(b[n:])
+		n += 4
 
-	if len(b) < n+4 {
-		err = parseErr("Duration", n+offset, err)
-		return
-	}
-	self.Duration = pio.U32BE(b[n:])
-	n += 4
+		if len(b) < n+4 {
+			err = parseErr("SAP", n+offset, err)
+			return
+		}
+		fourBytes = pio.U32BE(b[n:])
+		entry.SAPType = pio.U8(b[n:])
+		if (fourBytes>>31)&1 == 1 {
+			entry.StartsWithSAP = true
+		}
+		entry.SAPType = uint8((fourBytes >> 28) & 7)
+		entry.SAPDeltaTime = (fourBytes & 0x0fffffff)
+		n += 4
 
-	if len(b) < n+4 {
-		err = parseErr("SAPType", n+offset, err)
-		return
+		self.Entries[i] = entry
 	}
-	self.SAPType = pio.U32BE(b[n:])
-	n += 4
 
 	return
 }
 
 func (self SegmentIndex) Children() (r []Atom) {
+	return
+}
+
+type SampleToGroup struct {
+	Version               uint8
+	GroupingType          uint32
+	GroupingTypeParameter uint32
+	EntryCount            uint32
+	Entries               []*SampleToGroupEntry
+	AtomPos
+}
+
+type SampleToGroupEntry struct {
+	SampleCount           uint32
+	GroupDescriptionIndex uint32
+}
+
+func (self SampleToGroup) Marshal(b []byte) (n int) {
+	pio.PutU32BE(b[4:], uint32(SBGP))
+	n += self.marshal(b[8:]) + 8
+	pio.PutU32BE(b[0:], uint32(n))
+	return
+}
+
+func (self SampleToGroup) marshal(b []byte) (n int) {
+	pio.PutU8(b[n:], self.Version)
+	n += 1
+	n += 3
+	pio.PutU32BE(b[n:], self.GroupingType)
+	n += 4
+	if self.Version == 1 {
+		pio.PutU32BE(b[n:], self.GroupingTypeParameter)
+		n += 4
+	}
+	pio.PutU32BE(b[n:], uint32(len(self.Entries)))
+	n += 4
+	for _, entry := range self.Entries {
+		pio.PutU32BE(b[n:], entry.SampleCount)
+		n += 4
+		pio.PutU32BE(b[n:], entry.GroupDescriptionIndex)
+		n += 4
+	}
+	return
+}
+
+func (self SampleToGroup) Len() (n int) {
+	n += 8
+	n += 4
+	n += 4
+	if self.Version == 1 {
+		n += 4
+	}
+	n += 4
+	n += len(self.Entries) * 8
+	return
+}
+
+func (self *SampleToGroup) Unmarshal(b []byte, offset int) (n int, err error) {
+
+	(&self.AtomPos).setPos(offset, len(b))
+	n += 8
+
+	if len(b) < n+4 {
+		err = parseErr("Version", n+offset, err)
+		return
+	}
+	self.Version = pio.U8(b[n:])
+	n += 1
+	n += 3
+
+	if len(b) < n+4 {
+		err = parseErr("GroupingType", n+offset, err)
+		return
+	}
+	self.GroupingType = pio.U32BE(b[n:])
+	n += 4
+
+	if self.Version == 1 {
+		if len(b) < n+4 {
+			err = parseErr("GroupingTypeParameter", n+offset, err)
+			return
+		}
+		self.GroupingTypeParameter = pio.U32BE(b[n:])
+		n += 4
+	}
+
+	if len(b) < n+4 {
+		err = parseErr("EntryCount", n+offset, err)
+		return
+	}
+	self.EntryCount = pio.U32BE(b[n:])
+	n += 4
+
+	for n+4 < len(b) {
+		entry := &SampleToGroupEntry{}
+		entry.SampleCount = pio.U32BE(b[n:])
+		n += 4
+		entry.GroupDescriptionIndex = pio.U32BE(b[n:])
+		n += 4
+		self.Entries = append(self.Entries, entry)
+	}
+
+	return
+}
+
+func (self SampleToGroup) Children() (r []Atom) {
 	return
 }
