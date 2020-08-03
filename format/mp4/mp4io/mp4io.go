@@ -397,6 +397,8 @@ func ReadFileAtoms(r io.ReadSeeker) (atoms []Atom, err error) {
 			atom = &MovieFrag{}
 		case STYP:
 			atom = &SegmentType{}
+		case FTYP:
+			atom = &FileType{}
 		case SIDX:
 			atom = &SegmentIndex{}
 		}

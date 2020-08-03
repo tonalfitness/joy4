@@ -6,6 +6,18 @@ import (
 	"github.com/nareix/joy4/utils/bits/pio"
 )
 
+const FTYP = Tag(0x66747970)
+
+func (self FileType) Tag() Tag {
+	return FTYP
+}
+
+const FREE = Tag(0x66726565)
+
+func (self FreeSpace) Tag() Tag {
+	return FREE
+}
+
 const MOOF = Tag(0x6d6f6f66)
 
 func (self MovieFrag) Tag() Tag {
@@ -90,10 +102,22 @@ func (self MovieExtend) Tag() Tag {
 	return MVEX
 }
 
+const MEHD = Tag(0x6D656864)
+
+func (self MovieExtendHeader) Tag() Tag {
+	return MEHD
+}
+
 const STSD = Tag(0x73747364)
 
 func (self SampleDesc) Tag() Tag {
 	return STSD
+}
+
+const SGPD = Tag(0x73677064)
+
+func (self SampleGroupDescription) Tag() Tag {
+	return SGPD
 }
 
 const MP4A = Tag(0x6d703461)
@@ -235,6 +259,114 @@ func (self SampleToGroup) Tag() Tag {
 }
 
 const MDAT = Tag(0x6d646174)
+
+type FileType struct {
+	MajorVersion     uint32
+	MinorVersion     uint32
+	CompatibleBrands []uint32
+	AtomPos
+}
+
+func (self FileType) Marshal(b []byte) (n int) {
+	pio.PutU32BE(b[4:], uint32(FTYP))
+	n += self.marshal(b[8:]) + 8
+	pio.PutU32BE(b[0:], uint32(n))
+	return
+}
+
+func (self FileType) marshal(b []byte) (n int) {
+	pio.PutU32BE(b[n:], self.MajorVersion)
+	n += 4
+	pio.PutU32BE(b[n:], self.MinorVersion)
+	n += 4
+	for _, brand := range self.CompatibleBrands {
+		pio.PutU32BE(b[n:], brand)
+		n += 4
+	}
+	return
+}
+
+func (self FileType) Len() (n int) {
+	n += 8
+	n += 4
+	n += 4
+	n += len(self.CompatibleBrands) * 4
+	return
+}
+
+func (self *FileType) Unmarshal(b []byte, offset int) (n int, err error) {
+
+	(&self.AtomPos).setPos(offset, len(b))
+	n += 8
+
+	if len(b) < n+4 {
+		err = parseErr("MajorVersion", n+offset, err)
+		return
+	}
+	self.MajorVersion = pio.U32BE(b[n:])
+	n += 4
+
+	if len(b) < n+4 {
+		err = parseErr("MinorVersion", n+offset, err)
+		return
+	}
+	self.MinorVersion = pio.U32BE(b[n:])
+	n += 4
+
+	for n+4 < len(b) {
+		self.CompatibleBrands = append(self.CompatibleBrands, pio.U32BE(b[n:]))
+		n += 4
+	}
+
+	return
+}
+
+func (self FileType) Children() (r []Atom) {
+	return
+}
+
+type FreeSpace struct {
+	Data []uint8
+	AtomPos
+}
+
+func (self FreeSpace) Marshal(b []byte) (n int) {
+
+	pio.PutU32BE(b[4:], uint32(FREE))
+	n += self.marshal(b[8:]) + 8
+	pio.PutU32BE(b[0:], uint32(n))
+	return
+}
+
+func (self FreeSpace) marshal(b []byte) (n int) {
+	for _, d := range self.Data {
+		pio.PutU8(b[n:], d)
+		n += 1
+	}
+	return
+}
+
+func (self FreeSpace) Len() (n int) {
+	n += 8
+	n += len(self.Data)
+	return
+}
+
+func (self *FreeSpace) Unmarshal(b []byte, offset int) (n int, err error) {
+
+	(&self.AtomPos).setPos(offset, len(b))
+	n += 8
+
+	for n+1 < len(b) {
+		self.Data = append(self.Data, pio.U8(b[n:]))
+		n += 1
+	}
+	return
+}
+
+func (self FreeSpace) Children() (r []Atom) {
+	return
+}
 
 type Movie struct {
 	Header      *MovieHeader
@@ -558,11 +690,11 @@ func (self Track) marshal(b []byte) (n int) {
 	if self.Header != nil {
 		n += self.Header.Marshal(b[n:])
 	}
-	if self.Media != nil {
-		n += self.Media.Marshal(b[n:])
-	}
 	if self.Edit != nil {
 		n += self.Edit.Marshal(b[n:])
+	}
+	if self.Media != nil {
+		n += self.Media.Marshal(b[n:])
 	}
 	for _, atom := range self.Unknowns {
 		n += atom.Marshal(b[n:])
@@ -641,11 +773,11 @@ func (self Track) Children() (r []Atom) {
 	if self.Header != nil {
 		r = append(r, self.Header)
 	}
-	if self.Media != nil {
-		r = append(r, self.Media)
-	}
 	if self.Edit != nil {
 		r = append(r, self.Edit)
+	}
+	if self.Media != nil {
+		r = append(r, self.Media)
 	}
 	r = append(r, self.Unknowns...)
 	return
@@ -733,8 +865,15 @@ type EditList struct {
 	AtomPos
 }
 
+type EditListEntry struct {
+	TrackDuration     uint64
+	MediaTime         int64
+	MediaRateInteger  int16
+	MediaRateFraction int16
+}
+
 func (self EditList) Marshal(b []byte) (n int) {
-	pio.PutU32BE(b[4:], uint32(STTS))
+	pio.PutU32BE(b[4:], uint32(ELST))
 	n += self.marshal(b[8:]) + 8
 	pio.PutU32BE(b[0:], uint32(n))
 	return
@@ -747,8 +886,22 @@ func (self EditList) marshal(b []byte) (n int) {
 	pio.PutU32BE(b[n:], uint32(len(self.Entries)))
 	n += 4
 	for _, entry := range self.Entries {
-		PutEditListEntry(b[n:], entry)
-		n += LenEditListEntry
+		if self.Version == 1 {
+			pio.PutU64BE(b[n:], entry.TrackDuration)
+			n += 8
+			pio.PutI64BE(b[n:], entry.MediaTime)
+			n += 8
+		} else {
+			pio.PutU32BE(b[n:], uint32(entry.TrackDuration))
+			n += 4
+			pio.PutI32BE(b[n:], int32(entry.MediaTime))
+			n += 4
+		}
+
+		pio.PutI16BE(b[n:], entry.MediaRateInteger)
+		n += 2
+		pio.PutI16BE(b[n:], entry.MediaRateFraction)
+		n += 2
 	}
 	return
 }
@@ -757,7 +910,13 @@ func (self EditList) Len() (n int) {
 	n += 1
 	n += 3
 	n += 4
-	n += LenEditListEntry * len(self.Entries)
+	lenEditListEntry := 12
+	if self.Version == 1 {
+		lenEditListEntry = 20
+		n += lenEditListEntry * len(self.Entries)
+	} else {
+		n += lenEditListEntry * len(self.Entries)
+	}
 	return
 }
 func (self *EditList) Unmarshal(b []byte, offset int) (n int, err error) {
@@ -778,40 +937,41 @@ func (self *EditList) Unmarshal(b []byte, offset int) (n int, err error) {
 	var _len_Entries uint32
 	_len_Entries = pio.U32BE(b[n:])
 	n += 4
+	lenEditListEntry := 12
+	if self.Version == 1 {
+		lenEditListEntry = 20
+	}
 	self.Entries = make([]EditListEntry, _len_Entries)
-	if len(b) < n+LenEditListEntry*len(self.Entries) {
+	if len(b) < n+lenEditListEntry*len(self.Entries) {
 		err = parseErr("EditListEntry", n+offset, err)
 		return
 	}
 	for i := range self.Entries {
-		self.Entries[i] = GetEditListEntry(b[n:])
-		n += LenEditListEntry
+		entry := EditListEntry{}
+
+		if self.Version == 1 {
+			entry.TrackDuration = pio.U64BE(b[n:])
+			n += 8
+			entry.MediaTime = pio.I64BE(b[n:])
+			n += 8
+		} else {
+			entry.TrackDuration = uint64(pio.U32BE(b[n:]))
+			n += 4
+			entry.MediaTime = int64(pio.I32BE(b[n:]))
+			n += 4
+		}
+		entry.MediaRateInteger = pio.I16BE(b[n:])
+		n += 2
+		entry.MediaRateFraction = pio.I16BE(b[n:])
+		n += 2
+
+		self.Entries[i] = entry
 	}
 	return
 }
 func (self EditList) Children() (r []Atom) {
 	return
 }
-
-type EditListEntry struct {
-	TrackDuration int32
-	MediaTime     int32
-	MediaRate     uint32
-}
-
-func GetEditListEntry(b []byte) (self EditListEntry) {
-	self.TrackDuration = pio.I32BE(b[0:])
-	self.MediaTime = pio.I32BE(b[4:])
-	self.MediaRate = pio.U32BE(b[8:])
-	return
-}
-func PutEditListEntry(b []byte, self EditListEntry) {
-	pio.PutI32BE(b[0:], self.TrackDuration)
-	pio.PutI32BE(b[4:], self.MediaTime)
-	pio.PutU32BE(b[8:], self.MediaRate)
-}
-
-const LenEditListEntry = 12
 
 type TrackHeader struct {
 	Version        uint8
@@ -1724,13 +1884,14 @@ func (self VideoMediaInfo) Children() (r []Atom) {
 }
 
 type SampleTable struct {
-	SampleDesc        *SampleDesc
-	TimeToSample      *TimeToSample
-	CompositionOffset *CompositionOffset
-	SampleToChunk     *SampleToChunk
-	SyncSample        *SyncSample
-	ChunkOffset       *ChunkOffset
-	SampleSize        *SampleSize
+	SampleDesc             *SampleDesc
+	TimeToSample           *TimeToSample
+	CompositionOffset      *CompositionOffset
+	SampleToChunk          *SampleToChunk
+	SyncSample             *SyncSample
+	ChunkOffset            *ChunkOffset
+	SampleSize             *SampleSize
+	SampleGroupDescription *SampleGroupDescription
 	AtomPos
 }
 
@@ -1762,6 +1923,9 @@ func (self SampleTable) marshal(b []byte) (n int) {
 	if self.SampleSize != nil {
 		n += self.SampleSize.Marshal(b[n:])
 	}
+	if self.SampleGroupDescription != nil {
+		n += self.SampleGroupDescription.Marshal(b[n:])
+	}
 	return
 }
 func (self SampleTable) Len() (n int) {
@@ -1786,6 +1950,9 @@ func (self SampleTable) Len() (n int) {
 	}
 	if self.SampleSize != nil {
 		n += self.SampleSize.Len()
+	}
+	if self.SampleGroupDescription != nil {
+		n += self.SampleGroupDescription.Len()
 	}
 	return
 }
@@ -1862,6 +2029,15 @@ func (self *SampleTable) Unmarshal(b []byte, offset int) (n int, err error) {
 					return
 				}
 				self.SampleSize = atom
+			}
+		case SGPD:
+			{
+				atom := &SampleGroupDescription{}
+				if _, err = atom.Unmarshal(b[n:n+size], offset+n); err != nil {
+					err = parseErr("sgpd", n+offset, err)
+					return
+				}
+				self.SampleGroupDescription = atom
 			}
 		}
 		n += size
@@ -2007,6 +2183,138 @@ func (self SampleDesc) Children() (r []Atom) {
 		r = append(r, self.MP4ADesc)
 	}
 	r = append(r, self.Unknowns...)
+	return
+}
+
+type SampleGroupDescription struct {
+	Version              uint8
+	GroupingType         uint32
+	DefaultLength        uint32
+	DefaultSampleDescIdx uint32
+	EntryCount           uint32
+	Entries              []*SampleGroupDescriptionEntry
+	AtomPos
+}
+
+type SampleGroupDescriptionEntry struct {
+	Length  uint32
+	Payload int16
+}
+
+func (self SampleGroupDescription) Marshal(b []byte) (n int) {
+	pio.PutU32BE(b[4:], uint32(SGPD))
+	n += self.marshal(b[8:]) + 8
+	pio.PutU32BE(b[0:], uint32(n))
+	return
+}
+func (self SampleGroupDescription) marshal(b []byte) (n int) {
+	pio.PutU8(b[n:], self.Version)
+	n += 1
+	n += 3
+
+	pio.PutU32BE(b[n:], self.GroupingType)
+	n += 4
+
+	if self.Version == 1 {
+		pio.PutU32BE(b[n:], self.DefaultLength)
+		n += 4
+	} else if self.Version > 1 {
+		pio.PutU32BE(b[n:], self.DefaultSampleDescIdx)
+		n += 4
+	}
+
+	pio.PutU32BE(b[n:], uint32(len(self.Entries)))
+	n += 4
+
+	for _, entry := range self.Entries {
+		if self.Version == 1 && self.DefaultLength == 0 {
+			pio.PutU32BE(b[n:], entry.Length)
+			n += 4
+		}
+		pio.PutI16BE(b[n:], entry.Payload)
+		n += 2
+	}
+
+	return
+}
+func (self SampleGroupDescription) Len() (n int) {
+	n += 8
+	n += 1 // Version
+	n += 3
+	n += 4 // GroupingType
+	n += 4 // DefaultLength / DefaultSampleDescIdx
+	n += 4 // EntryCount
+
+	for range self.Entries {
+		if self.Version == 1 && self.DefaultLength == 0 {
+			n += 4 // Entry length
+		}
+		n += 2 // Payload
+	}
+	return
+}
+func (self *SampleGroupDescription) Unmarshal(b []byte, offset int) (n int, err error) {
+	(&self.AtomPos).setPos(offset, len(b))
+	n += 8
+	if len(b) < n+1 {
+		err = parseErr("Version", n+offset, err)
+		return
+	}
+	self.Version = pio.U8(b[n:])
+	n += 1
+	n += 3
+
+	if len(b) < n+4 {
+		err = parseErr("GroupingType", n+offset, err)
+		return
+	}
+	self.GroupingType = pio.U32BE(b[n:])
+	n += 4
+
+	// Version 0 is deprecated
+	if self.Version == 1 {
+		if len(b) < n+4 {
+			err = parseErr("DefaultLength", n+offset, err)
+			return
+		}
+		self.DefaultLength = pio.U32BE(b[n:])
+		n += 4
+	} else if self.Version > 1 {
+		if len(b) < n+4 {
+			err = parseErr("DefaultSampleDescIdx", n+offset, err)
+			return
+		}
+		self.DefaultSampleDescIdx = pio.U32BE(b[n:])
+		n += 4
+	}
+
+	if len(b) < n+4 {
+		err = parseErr("EntryCount", n+offset, err)
+		return
+	}
+	self.EntryCount = pio.U32BE(b[n:])
+	n += 4
+
+	self.Entries = make([]*SampleGroupDescriptionEntry, int(self.EntryCount))
+	for i := 0; i < int(self.EntryCount); i++ {
+		entry := &SampleGroupDescriptionEntry{Length: self.DefaultLength}
+		if self.Version == 1 && self.DefaultLength == 0 {
+			// If no default entry length, each length is specified
+			if len(b) < n+4 {
+				err = parseErr("EntryLength", n+offset, err)
+				return
+			}
+			entry.Length = pio.U32BE(b[n:])
+			n += 4
+		}
+		entry.Payload = pio.I16BE(b[n:])
+		n += 2
+		self.Entries[i] = entry
+	}
+
+	return
+}
+func (self SampleGroupDescription) Children() (r []Atom) {
 	return
 }
 
@@ -3088,6 +3396,7 @@ func (self TrackFrag) Children() (r []Atom) {
 }
 
 type MovieExtend struct {
+	Header   *MovieExtendHeader
 	Tracks   []*TrackExtend
 	Unknowns []Atom
 	AtomPos
@@ -3100,6 +3409,9 @@ func (self MovieExtend) Marshal(b []byte) (n int) {
 	return
 }
 func (self MovieExtend) marshal(b []byte) (n int) {
+	if self.Header != nil {
+		n += self.Header.Marshal(b[n:])
+	}
 	for _, atom := range self.Tracks {
 		n += atom.Marshal(b[n:])
 	}
@@ -3110,6 +3422,9 @@ func (self MovieExtend) marshal(b []byte) (n int) {
 }
 func (self MovieExtend) Len() (n int) {
 	n += 8
+	if self.Header != nil {
+		n += self.Header.Len()
+	}
 	for _, atom := range self.Tracks {
 		n += atom.Len()
 	}
@@ -3129,6 +3444,15 @@ func (self *MovieExtend) Unmarshal(b []byte, offset int) (n int, err error) {
 			return
 		}
 		switch tag {
+		case MEHD:
+			{
+				atom := &MovieExtendHeader{}
+				if _, err = atom.Unmarshal(b[n:n+size], offset+n); err != nil {
+					err = parseErr("mehd", n+offset, err)
+					return
+				}
+				self.Header = atom
+			}
 		case TREX:
 			{
 				atom := &TrackExtend{}
@@ -3157,6 +3481,77 @@ func (self MovieExtend) Children() (r []Atom) {
 		r = append(r, atom)
 	}
 	r = append(r, self.Unknowns...)
+	return
+}
+
+type MovieExtendHeader struct {
+	Version  uint8
+	Duration uint64
+	AtomPos
+}
+
+func (self MovieExtendHeader) Marshal(b []byte) (n int) {
+	pio.PutU32BE(b[4:], uint32(MEHD))
+	n += self.marshal(b[8:]) + 8
+	pio.PutU32BE(b[0:], uint32(n))
+	return
+}
+func (self MovieExtendHeader) marshal(b []byte) (n int) {
+	pio.PutU8(b[n:], self.Version)
+	n += 1
+	n += 3
+
+	if self.Version == 1 {
+		pio.PutU64BE(b[n:], self.Duration)
+		n += 8
+	} else {
+		pio.PutU32BE(b[n:], uint32(self.Duration))
+		n += 4
+	}
+	return
+}
+func (self MovieExtendHeader) Len() (n int) {
+	n += 8
+	n += 1
+	n += 3
+	if self.Version == 1 {
+		n += 8
+	} else {
+		n += 4
+	}
+	return
+}
+func (self *MovieExtendHeader) Unmarshal(b []byte, offset int) (n int, err error) {
+	(&self.AtomPos).setPos(offset, len(b))
+	n += 8
+
+	if len(b) < n+1 {
+		err = parseErr("Version", n+offset, err)
+		return
+	}
+	self.Version = pio.U8(b[n:])
+	n += 1
+	n += 3
+
+	if self.Version == 1 {
+		if len(b) < n+8 {
+			err = parseErr("Duration", n+offset, err)
+			return
+		}
+		self.Duration = pio.U64BE(b[n:])
+		n += 8
+	} else {
+		if len(b) < n+4 {
+			err = parseErr("Duration", n+offset, err)
+			return
+		}
+		self.Duration = uint64(pio.U32BE(b[n:]))
+		n += 4
+	}
+
+	return
+}
+func (self MovieExtendHeader) Children() (r []Atom) {
 	return
 }
 
