@@ -1,7 +1,6 @@
 package mp4io
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/nareix/joy4/utils/bits/pio"
@@ -4392,7 +4391,6 @@ func (self SegmentIndex) marshal(b []byte) (n int) {
 		sap |= (uint32(entry.SAPType) << 28)
 		sap |= (entry.SAPDeltaTime)
 		pio.PutU32BE(b[n:], sap)
-		fmt.Println(sap)
 
 		n += 4
 	}
