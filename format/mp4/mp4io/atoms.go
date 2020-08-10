@@ -1,6 +1,7 @@
 package mp4io
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/nareix/joy4/utils/bits/pio"
@@ -136,6 +137,12 @@ const STCO = Tag(0x7374636f)
 
 func (self ChunkOffset) Tag() Tag {
 	return STCO
+}
+
+const SDTP = Tag(0x73647470)
+
+func (self SampleDependency) Tag() Tag {
+	return SDTP
 }
 
 const TRUN = Tag(0x7472756e)
@@ -1892,6 +1899,7 @@ type SampleTable struct {
 	ChunkOffset            *ChunkOffset
 	SampleSize             *SampleSize
 	SampleGroupDescription *SampleGroupDescription
+	SampleDependency       *SampleDependency
 	AtomPos
 }
 
@@ -1953,6 +1961,9 @@ func (self SampleTable) Len() (n int) {
 	}
 	if self.SampleGroupDescription != nil {
 		n += self.SampleGroupDescription.Len()
+	}
+	if self.SampleDependency != nil {
+		n += self.SampleDependency.Len()
 	}
 	return
 }
@@ -2039,6 +2050,15 @@ func (self *SampleTable) Unmarshal(b []byte, offset int) (n int, err error) {
 				}
 				self.SampleGroupDescription = atom
 			}
+		case SDTP:
+			{
+				atom := &SampleDependency{}
+				if _, err = atom.Unmarshal(b[n:n+size], offset+n); err != nil {
+					err = parseErr("sdtp", n+offset, err)
+					return
+				}
+				self.SampleDependency = atom
+			}
 		}
 		n += size
 	}
@@ -2065,6 +2085,9 @@ func (self SampleTable) Children() (r []Atom) {
 	}
 	if self.SampleSize != nil {
 		r = append(r, self.SampleSize)
+	}
+	if self.SampleDependency != nil {
+		r = append(r, self.SampleDependency)
 	}
 	return
 }
@@ -3114,6 +3137,81 @@ func (self *ChunkOffset) Unmarshal(b []byte, offset int) (n int, err error) {
 	return
 }
 func (self ChunkOffset) Children() (r []Atom) {
+	return
+}
+
+type SampleDependency struct {
+	Version    uint8
+	EntryCount int
+	Entries    []*SampleDependencyEntry
+	AtomPos
+}
+
+type SampleDependencyEntry struct {
+	IsLeading           uint8
+	SampleDependsOn     uint8
+	SampleIsDependedOn  uint8
+	SampleHasRedundancy uint8
+}
+
+func (self SampleDependency) Marshal(b []byte) (n int) {
+	pio.PutU32BE(b[4:], uint32(SDTP))
+	n += self.marshal(b[8:]) + 8
+	pio.PutU32BE(b[0:], uint32(n))
+	return
+}
+func (self SampleDependency) marshal(b []byte) (n int) {
+	pio.PutU8(b[n:], self.Version)
+	n += 1
+	n += 3
+	for _, entry := range self.Entries {
+		flags := uint8(0)
+		flags |= (entry.IsLeading << 6)
+		flags |= (entry.SampleDependsOn << 4)
+		flags |= (entry.SampleIsDependedOn << 2)
+		flags |= (entry.SampleHasRedundancy)
+		pio.PutU8(b[n:], flags)
+		n += 1
+	}
+	return
+}
+func (self SampleDependency) Len() (n int) {
+	n += 8
+	n += 1
+	n += 3
+	n += 1 * len(self.Entries)
+	return
+}
+func (self *SampleDependency) Unmarshal(b []byte, offset int) (n int, err error) {
+	(&self.AtomPos).setPos(offset, len(b))
+	n += 8
+	if len(b) < n+4 {
+		err = parseErr("Version", n+offset, err)
+		return
+	}
+	self.Version = pio.U8(b[n:])
+	n += 1
+	n += 3
+
+	// Supposed to get this from stsz
+	self.Entries = make([]*SampleDependencyEntry, len(b[n:]))
+	if len(b) < n+1*len(self.Entries) {
+		err = parseErr("entry", n+offset, err)
+		return
+	}
+	for i := range self.Entries {
+		byt := pio.U8(b[n:])
+		entry := &SampleDependencyEntry{}
+		entry.IsLeading = (byt >> 6) & 3
+		entry.SampleDependsOn = (byt >> 4) & 3
+		entry.SampleIsDependedOn = (byt >> 2) & 3
+		entry.SampleHasRedundancy = byt & 3
+		self.Entries[i] = entry
+		n += 1
+	}
+	return
+}
+func (self SampleDependency) Children() (r []Atom) {
 	return
 }
 
@@ -4286,12 +4384,16 @@ func (self SegmentIndex) marshal(b []byte) (n int) {
 		pio.PutU32BE(b[n:], entry.Duration)
 		n += 4
 
-		// bit 1 = StartsWithSap 2-4 = SapType 5-32 = SAPDeltaTime
-		pio.PutU32BE(b[n:], entry.SAPDeltaTime)
-		pio.PutU8(b[n:], entry.SAPType)
+		// bit 0 = StartsWithSap 1-3 = SapType 4-31 = SAPDeltaTime
+		sap := uint32(0)
 		if entry.StartsWithSAP {
-			b[n] |= (1 << 7)
+			sap |= (1 << 31)
 		}
+		sap |= (uint32(entry.SAPType) << 28)
+		sap |= (entry.SAPDeltaTime)
+		pio.PutU32BE(b[n:], sap)
+		fmt.Println(sap)
+
 		n += 4
 	}
 
